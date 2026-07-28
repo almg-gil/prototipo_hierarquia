@@ -1520,6 +1520,14 @@ function userCanAccessManagement() {
               suggestedValue: change.suggestedValue || "",
               currentRaw: change.currentRaw !== undefined ? change.currentRaw : change.currentValue || "",
               suggestedRaw: change.suggestedRaw !== undefined ? change.suggestedRaw : change.suggestedValue || "",
+              operationId: change.operationId ? String(change.operationId) : "",
+              relatedTermId: change.relatedTermId ? String(change.relatedTermId) : "",
+              oldRelatedTermId: change.oldRelatedTermId ? String(change.oldRelatedTermId) : "",
+              newRelatedTermId: change.newRelatedTermId ? String(change.newRelatedTermId) : "",
+              targetTermId: change.targetTermId ? String(change.targetTermId) : "",
+              value: change.value === undefined || change.value === null ? "" : String(change.value),
+              oldValue: change.oldValue === undefined || change.oldValue === null ? "" : String(change.oldValue),
+              newValue: change.newValue === undefined || change.newValue === null ? "" : String(change.newValue),
               type: change.type || REVIEW_MODIFICADO,
               typeLabel: change.typeLabel || reviewLabel(change.type || REVIEW_MODIFICADO),
               author: change.author || "Usuário",
@@ -1838,6 +1846,525 @@ function userCanAccessManagement() {
           }
 
           term[field] = value === null || value === undefined ? "" : String(value);
+        }
+
+
+        const RELATIONSHIP_CHANGE_KINDS = new Set([
+          "relationship-authorized-add",
+          "relationship-authorized-remove",
+          "relationship-authorized-replace",
+          "relationship-unauthorized-add",
+          "relationship-unauthorized-remove",
+          "relationship-unauthorized-replace",
+          "relationship-unauthorized-move"
+        ]);
+
+        function isRelationshipField(field) {
+          return field === "relacionados" || field === "relacionadosNaoAutorizados";
+        }
+
+        function isRelationshipChange(change) {
+          return Boolean(change && RELATIONSHIP_CHANGE_KINDS.has(change.kind));
+        }
+
+        function relationshipChangeAffectedTermIds(change) {
+          if (!change) return [];
+
+          const ids = new Set();
+          if (change.termId) ids.add(String(change.termId));
+
+          if (change.kind === "relationship-authorized-add" ||
+              change.kind === "relationship-authorized-remove") {
+            if (change.relatedTermId) ids.add(String(change.relatedTermId));
+          }
+
+          if (change.kind === "relationship-authorized-replace") {
+            if (change.oldRelatedTermId) ids.add(String(change.oldRelatedTermId));
+            if (change.newRelatedTermId) ids.add(String(change.newRelatedTermId));
+          }
+
+          if (change.kind === "relationship-unauthorized-move" && change.targetTermId) {
+            ids.add(String(change.targetTermId));
+          }
+
+          return [...ids];
+        }
+
+        function allPendingRelationshipChanges() {
+          return state.terms
+            .flatMap(term => Array.isArray(term.pendingChanges) ? term.pendingChanges : [])
+            .filter(isRelationshipChange)
+            .slice()
+            .sort((a, b) => {
+              const timeA = Number(a.createdAtMs || 0);
+              const timeB = Number(b.createdAtMs || 0);
+              if (timeA !== timeB) return timeA - timeB;
+              return String(a.id || "").localeCompare(String(b.id || ""));
+            });
+        }
+
+        function addIdToList(list, value) {
+          const id = String(value || "");
+          const result = Array.isArray(list) ? list.map(String) : [];
+          if (id && !result.includes(id)) result.push(id);
+          return result;
+        }
+
+        function removeIdFromList(list, value) {
+          const id = String(value || "");
+          return (Array.isArray(list) ? list : [])
+            .map(String)
+            .filter(item => item !== id);
+        }
+
+        function addUnauthorizedToList(list, value) {
+          const text = String(value || "").trim();
+          const result = Array.isArray(list) ? list.map(String) : [];
+          const key = normalizeUpDuplicateKey(text);
+
+          if (text && !result.some(item => normalizeUpDuplicateKey(item) === key)) {
+            result.push(text);
+          }
+
+          return result;
+        }
+
+        function removeUnauthorizedFromList(list, value) {
+          const key = normalizeUpDuplicateKey(value);
+          return (Array.isArray(list) ? list : [])
+            .map(String)
+            .filter(item => normalizeUpDuplicateKey(item) !== key);
+        }
+
+        function applyRelationshipChangeToCollections(change, authorizedByTerm, unauthorizedByTerm) {
+          if (!isRelationshipChange(change)) return;
+
+          const sourceId = String(change.termId || "");
+          if (!sourceId) return;
+
+          function authorizedList(termId) {
+            const id = String(termId || "");
+            if (!authorizedByTerm.has(id)) authorizedByTerm.set(id, []);
+            return authorizedByTerm.get(id);
+          }
+
+          function setAuthorized(termId, list) {
+            authorizedByTerm.set(String(termId || ""), list);
+          }
+
+          function unauthorizedList(termId) {
+            const id = String(termId || "");
+            if (!unauthorizedByTerm.has(id)) unauthorizedByTerm.set(id, []);
+            return unauthorizedByTerm.get(id);
+          }
+
+          function setUnauthorized(termId, list) {
+            unauthorizedByTerm.set(String(termId || ""), list);
+          }
+
+          if (change.kind === "relationship-authorized-add") {
+            const relatedId = String(change.relatedTermId || "");
+            if (!relatedId) return;
+            setAuthorized(sourceId, addIdToList(authorizedList(sourceId), relatedId));
+            setAuthorized(relatedId, addIdToList(authorizedList(relatedId), sourceId));
+            return;
+          }
+
+          if (change.kind === "relationship-authorized-remove") {
+            const relatedId = String(change.relatedTermId || "");
+            if (!relatedId) return;
+            setAuthorized(sourceId, removeIdFromList(authorizedList(sourceId), relatedId));
+            setAuthorized(relatedId, removeIdFromList(authorizedList(relatedId), sourceId));
+            return;
+          }
+
+          if (change.kind === "relationship-authorized-replace") {
+            const oldId = String(change.oldRelatedTermId || "");
+            const newId = String(change.newRelatedTermId || "");
+
+            if (oldId) {
+              setAuthorized(sourceId, removeIdFromList(authorizedList(sourceId), oldId));
+              setAuthorized(oldId, removeIdFromList(authorizedList(oldId), sourceId));
+            }
+
+            if (newId) {
+              setAuthorized(sourceId, addIdToList(authorizedList(sourceId), newId));
+              setAuthorized(newId, addIdToList(authorizedList(newId), sourceId));
+            }
+            return;
+          }
+
+          if (change.kind === "relationship-unauthorized-add") {
+            setUnauthorized(
+              sourceId,
+              addUnauthorizedToList(unauthorizedList(sourceId), change.value)
+            );
+            return;
+          }
+
+          if (change.kind === "relationship-unauthorized-remove") {
+            setUnauthorized(
+              sourceId,
+              removeUnauthorizedFromList(unauthorizedList(sourceId), change.value)
+            );
+            return;
+          }
+
+          if (change.kind === "relationship-unauthorized-replace") {
+            let list = removeUnauthorizedFromList(unauthorizedList(sourceId), change.oldValue);
+            list = addUnauthorizedToList(list, change.newValue);
+            setUnauthorized(sourceId, list);
+            return;
+          }
+
+          if (change.kind === "relationship-unauthorized-move") {
+            const targetId = String(change.targetTermId || "");
+            if (!targetId) return;
+
+            setUnauthorized(
+              sourceId,
+              removeUnauthorizedFromList(unauthorizedList(sourceId), change.value)
+            );
+            setUnauthorized(
+              targetId,
+              addUnauthorizedToList(unauthorizedList(targetId), change.value)
+            );
+          }
+        }
+
+        function rebuildRelationshipStateFromBaselines() {
+          const authorizedByTerm = new Map();
+          const unauthorizedByTerm = new Map();
+
+          state.terms.forEach(term => {
+            authorizedByTerm.set(
+              String(term.id),
+              Array.isArray(term.original?.relacionados)
+                ? [...term.original.relacionados].map(String)
+                : (Array.isArray(term.relacionados) ? [...term.relacionados].map(String) : [])
+            );
+
+            unauthorizedByTerm.set(
+              String(term.id),
+              Array.isArray(term.original?.relacionadosNaoAutorizados)
+                ? [...term.original.relacionadosNaoAutorizados].map(String)
+                : (Array.isArray(term.relacionadosNaoAutorizados)
+                    ? [...term.relacionadosNaoAutorizados].map(String)
+                    : [])
+            );
+          });
+
+          allPendingRelationshipChanges().forEach(change => {
+            applyRelationshipChangeToCollections(change, authorizedByTerm, unauthorizedByTerm);
+          });
+
+          state.terms.forEach(term => {
+            term.relacionados = authorizedByTerm.get(String(term.id)) || [];
+            term.relacionadosNaoAutorizados = unauthorizedByTerm.get(String(term.id)) || [];
+          });
+        }
+
+        function relationshipOperationSignature(change) {
+          return JSON.stringify({
+            kind: change.kind || "",
+            termId: String(change.termId || ""),
+            relatedTermId: String(change.relatedTermId || ""),
+            oldRelatedTermId: String(change.oldRelatedTermId || ""),
+            newRelatedTermId: String(change.newRelatedTermId || ""),
+            targetTermId: String(change.targetTermId || ""),
+            value: String(change.value || ""),
+            oldValue: String(change.oldValue || ""),
+            newValue: String(change.newValue || "")
+          });
+        }
+
+        function registerPendingRelationshipChange(term, data) {
+          if (!term || !data || !RELATIONSHIP_CHANGE_KINDS.has(data.kind)) return false;
+
+          if (term.revisao === REVIEW_NOVO || term.revisao === REVIEW_EXCLUIR) {
+            return false;
+          }
+
+          const affectedIds = relationshipChangeAffectedTermIds({
+            ...data,
+            termId: term.id
+          });
+
+          affectedIds.forEach(id => {
+            const affectedTerm = getTerm(id);
+            if (affectedTerm && affectedTerm.revisao !== REVIEW_NOVO) {
+              ensureOriginal(affectedTerm);
+            }
+          });
+
+          term.pendingChanges = Array.isArray(term.pendingChanges) ? term.pendingChanges : [];
+
+          const change = {
+            id: uid("change"),
+            operationId: uid("relationship"),
+            termId: String(term.id),
+            kind: data.kind,
+            field: data.field || "",
+            title: data.title || "Alteração de relacionamento",
+            relatedTermId: data.relatedTermId ? String(data.relatedTermId) : "",
+            oldRelatedTermId: data.oldRelatedTermId ? String(data.oldRelatedTermId) : "",
+            newRelatedTermId: data.newRelatedTermId ? String(data.newRelatedTermId) : "",
+            targetTermId: data.targetTermId ? String(data.targetTermId) : "",
+            value: data.value === undefined || data.value === null ? "" : String(data.value),
+            oldValue: data.oldValue === undefined || data.oldValue === null ? "" : String(data.oldValue),
+            newValue: data.newValue === undefined || data.newValue === null ? "" : String(data.newValue),
+            currentValue: data.currentValue || "",
+            suggestedValue: data.suggestedValue || "",
+            currentRaw: data.currentRaw === undefined ? null : cloneRawValue(data.currentRaw),
+            suggestedRaw: data.suggestedRaw === undefined ? null : cloneRawValue(data.suggestedRaw),
+            type: REVIEW_MODIFICADO,
+            typeLabel: reviewLabel(REVIEW_MODIFICADO),
+            author: currentUser.value.trim() || "Usuário",
+            createdAt: nowLabel(),
+            createdAtMs: Date.now()
+          };
+
+          const signature = relationshipOperationSignature(change);
+          const alreadyExists = term.pendingChanges.some(existing =>
+            isRelationshipChange(existing) &&
+            relationshipOperationSignature(existing) === signature
+          );
+
+          if (alreadyExists) return false;
+
+          term.pendingChanges.push(change);
+          markModified(term);
+          rebuildRelationshipStateFromBaselines();
+          return true;
+        }
+
+        function applyRelationshipChangeToApprovedBaselines(change) {
+          const authorizedByTerm = new Map();
+          const unauthorizedByTerm = new Map();
+          const affectedIds = relationshipChangeAffectedTermIds(change);
+
+          affectedIds.forEach(id => {
+            const term = getTerm(id);
+            if (!term) return;
+
+            ensureOriginal(term);
+
+            authorizedByTerm.set(
+              String(id),
+              Array.isArray(term.original?.relacionados)
+                ? [...term.original.relacionados].map(String)
+                : []
+            );
+
+            unauthorizedByTerm.set(
+              String(id),
+              Array.isArray(term.original?.relacionadosNaoAutorizados)
+                ? [...term.original.relacionadosNaoAutorizados].map(String)
+                : []
+            );
+          });
+
+          applyRelationshipChangeToCollections(change, authorizedByTerm, unauthorizedByTerm);
+
+          affectedIds.forEach(id => {
+            const term = getTerm(id);
+            if (!term || !term.original) return;
+
+            if (authorizedByTerm.has(String(id))) {
+              term.original.relacionados = [...authorizedByTerm.get(String(id))];
+            }
+
+            if (unauthorizedByTerm.has(String(id))) {
+              term.original.relacionadosNaoAutorizados = [
+                ...unauthorizedByTerm.get(String(id))
+              ];
+            }
+          });
+        }
+
+        function hasPendingRelationshipAffectingTerm(termId) {
+          const id = String(termId || "");
+          return allPendingRelationshipChanges().some(change =>
+            relationshipChangeAffectedTermIds(change).includes(id)
+          );
+        }
+
+        function cleanupRelationshipReviewState(termIds = []) {
+          const ids = new Set((termIds || []).map(String));
+
+          ids.forEach(id => {
+            const term = getTerm(id);
+            if (!term || !term.original) return;
+
+            const hasOwnPending = Array.isArray(term.pendingChanges) && term.pendingChanges.length > 0;
+            const isAffectedByAnotherPending = hasPendingRelationshipAffectingTerm(id);
+
+            if (
+              term.revisao === REVIEW_MODIFICADO &&
+              !hasOwnPending &&
+              !isAffectedByAnotherPending &&
+              termMatchesOriginal(term)
+            ) {
+              clearReview(term);
+              return;
+            }
+
+            if (
+              term.revisao === REVIEW_ORIGINAL &&
+              !hasOwnPending &&
+              !isAffectedByAnotherPending &&
+              termMatchesOriginal(term)
+            ) {
+              term.original = null;
+              term.revisaoPor = "";
+              term.revisaoEm = "";
+            }
+          });
+        }
+
+        function legacyRelationshipAuthor(term, legacyChanges, predicate) {
+          const match = legacyChanges
+            .filter(predicate)
+            .slice()
+            .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))[0];
+
+          return {
+            author: match?.author || term.revisaoPor || "Usuário",
+            createdAt: match?.createdAt || term.revisaoEm || "",
+            createdAtMs: Number(match?.createdAtMs || 0)
+          };
+        }
+
+        function migrateLegacyRelationshipChanges() {
+          let changed = false;
+          const processedAuthorizedPairs = new Set();
+
+          state.terms.forEach(term => {
+            if (!term.original || term.revisao !== REVIEW_MODIFICADO) return;
+
+            term.pendingChanges = Array.isArray(term.pendingChanges) ? term.pendingChanges : [];
+
+            const legacy = term.pendingChanges.filter(change =>
+              !isRelationshipChange(change) && isRelationshipField(change.field)
+            );
+
+            const existingRelationshipOps = term.pendingChanges.filter(isRelationshipChange);
+
+            if (legacy.length) {
+              term.pendingChanges = term.pendingChanges.filter(change =>
+                isRelationshipChange(change) || !isRelationshipField(change.field)
+              );
+              changed = true;
+            }
+
+            if (existingRelationshipOps.length) return;
+
+            const originalAuthorized = Array.isArray(term.original.relacionados)
+              ? term.original.relacionados.map(String)
+              : [];
+            const currentAuthorized = Array.isArray(term.relacionados)
+              ? term.relacionados.map(String)
+              : [];
+
+            const addedAuthorized = listAddedItems(originalAuthorized, currentAuthorized);
+            const removedAuthorized = listRemovedItems(originalAuthorized, currentAuthorized);
+
+            [...addedAuthorized.map(id => ({ id, operation: "add" })),
+             ...removedAuthorized.map(id => ({ id, operation: "remove" }))]
+              .forEach(item => {
+                const pairKey = [String(term.id), String(item.id)].sort().join("::") + `::${item.operation}`;
+                if (processedAuthorizedPairs.has(pairKey)) return;
+                processedAuthorizedPairs.add(pairKey);
+
+                const meta = legacyRelationshipAuthor(term, legacy, change =>
+                  change.field === "relacionados"
+                );
+
+                term.pendingChanges.push({
+                  id: uid("change"),
+                  operationId: uid("relationship"),
+                  termId: String(term.id),
+                  kind: item.operation === "add"
+                    ? "relationship-authorized-add"
+                    : "relationship-authorized-remove",
+                  field: "relacionados",
+                  title: item.operation === "add"
+                    ? "Termo relacionado adicionado"
+                    : "Retirada de termo relacionado sugerida",
+                  relatedTermId: String(item.id),
+                  type: REVIEW_MODIFICADO,
+                  typeLabel: reviewLabel(REVIEW_MODIFICADO),
+                  author: meta.author,
+                  createdAt: meta.createdAt,
+                  createdAtMs: meta.createdAtMs
+                });
+                changed = true;
+              });
+
+            const originalUnauthorized = Array.isArray(term.original.relacionadosNaoAutorizados)
+              ? term.original.relacionadosNaoAutorizados.map(String)
+              : [];
+            const currentUnauthorized = Array.isArray(term.relacionadosNaoAutorizados)
+              ? term.relacionadosNaoAutorizados.map(String)
+              : [];
+
+            const originalKeys = new Set(originalUnauthorized.map(normalizeUpDuplicateKey));
+            const currentKeys = new Set(currentUnauthorized.map(normalizeUpDuplicateKey));
+
+            currentUnauthorized
+              .filter(value => !originalKeys.has(normalizeUpDuplicateKey(value)))
+              .forEach(value => {
+                const meta = legacyRelationshipAuthor(term, legacy, change =>
+                  change.field === "relacionadosNaoAutorizados"
+                );
+
+                term.pendingChanges.push({
+                  id: uid("change"),
+                  operationId: uid("relationship"),
+                  termId: String(term.id),
+                  kind: "relationship-unauthorized-add",
+                  field: "relacionadosNaoAutorizados",
+                  title: "Termo não autorizado acrescentado",
+                  value,
+                  type: REVIEW_MODIFICADO,
+                  typeLabel: reviewLabel(REVIEW_MODIFICADO),
+                  author: meta.author,
+                  createdAt: meta.createdAt,
+                  createdAtMs: meta.createdAtMs
+                });
+                changed = true;
+              });
+
+            originalUnauthorized
+              .filter(value => !currentKeys.has(normalizeUpDuplicateKey(value)))
+              .forEach(value => {
+                const meta = legacyRelationshipAuthor(term, legacy, change =>
+                  change.field === "relacionadosNaoAutorizados"
+                );
+
+                term.pendingChanges.push({
+                  id: uid("change"),
+                  operationId: uid("relationship"),
+                  termId: String(term.id),
+                  kind: "relationship-unauthorized-remove",
+                  field: "relacionadosNaoAutorizados",
+                  title: "Retirada de termo não autorizado sugerida",
+                  value,
+                  type: REVIEW_MODIFICADO,
+                  typeLabel: reviewLabel(REVIEW_MODIFICADO),
+                  author: meta.author,
+                  createdAt: meta.createdAt,
+                  createdAtMs: meta.createdAtMs
+                });
+                changed = true;
+              });
+          });
+
+          if (changed) {
+            rebuildRelationshipStateFromBaselines();
+          }
+
+          return changed;
         }
 
     function registerReviewMetadata(term) {
@@ -2608,6 +3135,70 @@ function renderPendingTermGroupHtml(group) {
   `;
 }
 
+function relationshipChangePresentation(change) {
+  if (!isRelationshipChange(change)) return null;
+
+  if (change.kind === "relationship-authorized-add") {
+    return {
+      title: "Termo relacionado adicionado",
+      lines: [`Termo relacionado: ${getTermNameForSummary(change.relatedTermId)}`]
+    };
+  }
+
+  if (change.kind === "relationship-authorized-remove") {
+    return {
+      title: "Retirada de termo relacionado sugerida",
+      lines: [`Termo relacionado: ${getTermNameForSummary(change.relatedTermId)}`]
+    };
+  }
+
+  if (change.kind === "relationship-authorized-replace") {
+    return {
+      title: "Termo relacionado substituído",
+      lines: [
+        `Atual: ${getTermNameForSummary(change.oldRelatedTermId)}`,
+        `Sugestão: ${getTermNameForSummary(change.newRelatedTermId)}`
+      ]
+    };
+  }
+
+  if (change.kind === "relationship-unauthorized-add") {
+    return {
+      title: "Termo não autorizado acrescentado",
+      lines: [String(change.value || "—")]
+    };
+  }
+
+  if (change.kind === "relationship-unauthorized-remove") {
+    return {
+      title: "Retirada de termo não autorizado sugerida",
+      lines: [String(change.value || "—")]
+    };
+  }
+
+  if (change.kind === "relationship-unauthorized-replace") {
+    return {
+      title: "Termo não autorizado alterado",
+      lines: [
+        `Atual: ${change.oldValue || "—"}`,
+        `Sugestão: ${change.newValue || "—"}`
+      ]
+    };
+  }
+
+  if (change.kind === "relationship-unauthorized-move") {
+    return {
+      title: "Termo não autorizado movido",
+      lines: [
+        `Termo não autorizado: ${change.value || "—"}`,
+        `Novo termo autorizado: ${getTermNameForSummary(change.targetTermId)}`
+      ]
+    };
+  }
+
+  return null;
+}
+
 function unauthorizedTermsDiff(change) {
   if (
     change.field !== "relacionadosNaoAutorizados" ||
@@ -2643,6 +3234,9 @@ function unauthorizedTermsDiff(change) {
 }
 
 function pendingChangeDisplayTitle(change) {
+  const relationshipPresentation = relationshipChangePresentation(change);
+  if (relationshipPresentation) return relationshipPresentation.title;
+
   const diff = unauthorizedTermsDiff(change);
 
   if (!diff) {
@@ -2708,6 +3302,12 @@ function listRemovedItems(originalList, currentList) {
 }
 
 function changeTextForHistory(change) {
+  const relationshipPresentation = relationshipChangePresentation(change);
+
+  if (relationshipPresentation) {
+    return [relationshipPresentation.title, ...relationshipPresentation.lines].join("\n");
+  }
+
   const unauthorizedDiff = unauthorizedTermsDiff(change);
 
   if (unauthorizedDiff) {
@@ -2732,6 +3332,24 @@ function changeTextForHistory(change) {
 }
 
 function renderChangeSummaryHtml(change) {
+  const relationshipPresentation = relationshipChangePresentation(change);
+
+  if (relationshipPresentation) {
+    return `
+      <div class="change-summary">
+        <div class="change-summary-title">
+          ${escapeHtml(relationshipPresentation.title)}
+        </div>
+
+        <div class="change-summary-block">
+          <div class="change-summary-text">
+            ${relationshipPresentation.lines.map(line => escapeHtml(line)).join("<br>")}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   const unauthorizedDiff = unauthorizedTermsDiff(change);
 
   if (unauthorizedDiff) {
@@ -4189,32 +4807,75 @@ function renderOriginalSummary(term) {
       const other = getTerm(relatedId);
       if (!term || !other || term.id === other.id) return false;
 
-      ensureOriginal(term);
-      ensureOriginal(other);
+      if ((term.relacionados || []).map(String).includes(String(other.id))) {
+        return false;
+      }
 
-      term.relacionados = addUniqueValue(term.relacionados, other.id);
-      other.relacionados = addUniqueValue(other.relacionados, term.id);
+      // Relações de termos novos integram a aprovação do termo inteiro.
+      if (term.revisao === REVIEW_NOVO) {
+        ensureOriginal(other);
+        term.relacionados = addUniqueValue(term.relacionados, other.id);
+        other.relacionados = addUniqueValue(other.relacionados, term.id);
+        markModified(other);
+        return true;
+      }
 
-      markModified(term);
-      markModified(other);
-
-      return true;
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-authorized-add",
+        field: "relacionados",
+        title: "Termo relacionado adicionado",
+        relatedTermId: other.id
+      });
     }
 
     function removeAuthorizedRelation(term, relatedId) {
       const other = getTerm(relatedId);
       if (!term || !other) return false;
 
-      ensureOriginal(term);
-      ensureOriginal(other);
+      if (!(term.relacionados || []).map(String).includes(String(other.id))) {
+        return false;
+      }
 
-      term.relacionados = removeValue(term.relacionados, relatedId);
-      other.relacionados = removeValue(other.relacionados, term.id);
+      if (term.revisao === REVIEW_NOVO) {
+        term.relacionados = removeValue(term.relacionados, relatedId);
+        other.relacionados = removeValue(other.relacionados, term.id);
+        clearReviewIfBackToOriginal(other);
+        return true;
+      }
 
-      markModified(term);
-      markModified(other);
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-authorized-remove",
+        field: "relacionados",
+        title: "Retirada de termo relacionado sugerida",
+        relatedTermId: other.id
+      });
+    }
 
-      return true;
+    function replaceAuthorizedRelation(term, oldRelatedId, newRelatedId) {
+      const oldRelated = getTerm(oldRelatedId);
+      const newRelated = getTerm(newRelatedId);
+
+      if (!term || !oldRelated || !newRelated) return false;
+      if (term.id === newRelated.id || oldRelated.id === newRelated.id) return false;
+
+      if ((term.relacionados || []).map(String).includes(String(newRelated.id))) {
+        alert(`O termo já possui relação com "${displayTermName(newRelated)}".`);
+        return false;
+      }
+
+      if (term.revisao === REVIEW_NOVO) {
+        removeAuthorizedRelation(term, oldRelated.id);
+        addAuthorizedRelation(term, newRelated.id);
+        return true;
+      }
+
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-authorized-replace",
+        field: "relacionados",
+        title: "Termo relacionado substituído",
+        oldRelatedTermId: oldRelated.id,
+        newRelatedTermId: newRelated.id
+      });
     }
 
     function addUnauthorizedRelation(term, value) {
@@ -4227,7 +4888,6 @@ function renderOriginalSummary(term) {
         : [];
 
       const newKey = normalizeUpDuplicateKey(upValue);
-
       const alreadyExists = before.some(existing =>
         normalizeUpDuplicateKey(existing) === newKey
       );
@@ -4237,21 +4897,17 @@ function renderOriginalSummary(term) {
         return false;
       }
 
-      ensureOriginal(term);
+      if (term.revisao === REVIEW_NOVO) {
+        term.relacionadosNaoAutorizados = [...before, upValue];
+        return true;
+      }
 
-      const after = [...before, upValue];
-
-      registerPendingFieldChange(
-        term,
-        "relacionadosNaoAutorizados",
-        before,
-        after
-      );
-
-      term.relacionadosNaoAutorizados = after;
-
-      markModified(term);
-      return true;
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-unauthorized-add",
+        field: "relacionadosNaoAutorizados",
+        title: "Termo não autorizado acrescentado",
+        value: upValue
+      });
     }
 
     function editUnauthorizedRelation(term, index, newValue) {
@@ -4263,7 +4919,8 @@ function renderOriginalSummary(term) {
         ? [...term.relacionadosNaoAutorizados]
         : [];
 
-      if (!before[index]) return false;
+      const oldValue = before[index];
+      if (!oldValue) return false;
 
       const editedKey = normalizeUpDuplicateKey(editedValue);
       const duplicateExists = before.some((existing, existingIndex) =>
@@ -4276,22 +4933,20 @@ function renderOriginalSummary(term) {
         return false;
       }
 
-      ensureOriginal(term);
+      if (term.revisao === REVIEW_NOVO) {
+        const after = [...before];
+        after[index] = editedValue;
+        term.relacionadosNaoAutorizados = after;
+        return true;
+      }
 
-      const after = [...before];
-      after[index] = editedValue;
-
-      registerPendingFieldChange(
-        term,
-        "relacionadosNaoAutorizados",
-        before,
-        after
-      );
-
-      term.relacionadosNaoAutorizados = after;
-
-      markModified(term);
-      return true;
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-unauthorized-replace",
+        field: "relacionadosNaoAutorizados",
+        title: "Termo não autorizado alterado",
+        oldValue,
+        newValue: editedValue
+      });
     }
 
     function removeUnauthorizedRelation(term, index) {
@@ -4301,23 +4956,20 @@ function renderOriginalSummary(term) {
         ? [...term.relacionadosNaoAutorizados]
         : [];
 
-      if (!before[index]) return false;
+      const value = before[index];
+      if (!value) return false;
 
-      ensureOriginal(term);
+      if (term.revisao === REVIEW_NOVO) {
+        term.relacionadosNaoAutorizados = removeValueAtIndex(before, index);
+        return true;
+      }
 
-      const after = removeValueAtIndex(before, index);
-
-      registerPendingFieldChange(
-        term,
-        "relacionadosNaoAutorizados",
-        before,
-        after
-      );
-
-      term.relacionadosNaoAutorizados = after;
-
-      markModified(term);
-      return true;
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-unauthorized-remove",
+        field: "relacionadosNaoAutorizados",
+        title: "Retirada de termo não autorizado sugerida",
+        value
+      });
     }
 
     function moveUnauthorizedRelation(term, index, targetTermId) {
@@ -4337,7 +4989,6 @@ function renderOriginalSummary(term) {
         : [];
 
       const valueKey = normalizeUpDuplicateKey(value);
-
       const targetAlreadyHasValue = targetBefore.some(existing =>
         normalizeUpDuplicateKey(existing) === valueKey
       );
@@ -4347,33 +4998,20 @@ function renderOriginalSummary(term) {
         return false;
       }
 
-      ensureOriginal(term);
-      ensureOriginal(target);
+      if (term.revisao === REVIEW_NOVO) {
+        term.relacionadosNaoAutorizados = removeValueAtIndex(sourceBefore, index);
+        target.relacionadosNaoAutorizados = [...targetBefore, value];
+        markModified(target);
+        return true;
+      }
 
-      const sourceAfter = removeValueAtIndex(sourceBefore, index);
-      const targetAfter = [...targetBefore, value];
-
-      registerPendingFieldChange(
-        term,
-        "relacionadosNaoAutorizados",
-        sourceBefore,
-        sourceAfter
-      );
-
-      registerPendingFieldChange(
-        target,
-        "relacionadosNaoAutorizados",
-        targetBefore,
-        targetAfter
-      );
-
-      term.relacionadosNaoAutorizados = sourceAfter;
-      target.relacionadosNaoAutorizados = targetAfter;
-
-      markModified(term);
-      markModified(target);
-
-      return true;
+      return registerPendingRelationshipChange(term, {
+        kind: "relationship-unauthorized-move",
+        field: "relacionadosNaoAutorizados",
+        title: "Termo não autorizado movido",
+        value,
+        targetTermId: target.id
+      });
     }
 
     function renderCompactRelatedList(term) {
@@ -4710,8 +5348,8 @@ function renderOriginalSummary(term) {
                     return;
                   }
 
-                  removeAuthorizedRelation(term, targetId);
-                  addAuthorizedRelation(term, newTargetId);
+                  const replaced = replaceAuthorizedRelation(term, targetId, newTargetId);
+                  if (!replaced) return;
 
                   await saveState();
                   render();
@@ -5099,9 +5737,15 @@ function renderOriginalSummary(term) {
 
       if (!confirmed) return;
 
+      const affectedRelationshipIds = (Array.isArray(term.pendingChanges) ? term.pendingChanges : [])
+        .filter(isRelationshipChange)
+        .flatMap(relationshipChangeAffectedTermIds);
+
       restoreTermFromOriginal(term);
       const restoredParentId = term.parentId || null;
       clearReview(term);
+      rebuildRelationshipStateFromBaselines();
+      cleanupRelationshipReviewState(affectedRelationshipIds);
 
       if (restoredParentId && !state.expanded.includes(restoredParentId)) {
         state.expanded.push(restoredParentId);
@@ -5178,7 +5822,15 @@ async function approvePendingChange(changeId) {
 
   registrarDecisaoMudanca(term, change, "aprovada");
 
-  if (change.kind === "field" || change.kind === "parent") {
+  if (isRelationshipChange(change)) {
+    const affectedIds = relationshipChangeAffectedTermIds(change);
+
+    // Aprova somente esta operação de relacionamento.
+    applyRelationshipChangeToApprovedBaselines(change);
+    removePendingChangeById(term, change.id);
+    rebuildRelationshipStateFromBaselines();
+    cleanupRelationshipReviewState(affectedIds);
+  } else if (change.kind === "field" || change.kind === "parent") {
     applyRawValueToTerm(term, change.field, change.suggestedRaw);
 
     term.original[change.field] = cloneRawValue(change.suggestedRaw);
@@ -5187,7 +5839,7 @@ async function approvePendingChange(changeId) {
       term.termoAnterior = "";
     }
 
-    // Sugestões concorrentes no mesmo campo são encerradas.
+    // Apenas campos de cadastro têm sugestões mutuamente excludentes.
     removePendingChangesForField(term, change.field);
   }
 
@@ -5228,7 +5880,15 @@ async function approvePendingChange(changeId) {
 
           registrarDecisaoMudanca(term, change, "rejeitada", justificativa);
 
-          if (change.kind === "field" || change.kind === "parent") {
+          if (isRelationshipChange(change)) {
+            const affectedIds = relationshipChangeAffectedTermIds(change);
+
+            // Rejeita somente esta operação e recompõe as relações
+            // a partir da base aprovada mais as demais pendências.
+            removePendingChangeById(term, change.id);
+            rebuildRelationshipStateFromBaselines();
+            cleanupRelationshipReviewState(affectedIds);
+          } else if (change.kind === "field" || change.kind === "parent") {
             removePendingChangeById(term, change.id);
 
             const latestSameField = latestPendingChangeForField(term, change.field);
@@ -5320,11 +5980,17 @@ removeTermCompletely(term.id);
 
     registrarDecisao(term, "rejeitada", justificativa);
 
+    const affectedRelationshipIds = (Array.isArray(term.pendingChanges) ? term.pendingChanges : [])
+      .filter(isRelationshipChange)
+      .flatMap(relationshipChangeAffectedTermIds);
+
     if (term.original) {
       restoreTermFromOriginal(term);
     }
 
       clearReview(term);
+      rebuildRelationshipStateFromBaselines();
+      cleanupRelationshipReviewState(affectedRelationshipIds);
    } else if (term.revisao === REVIEW_EXCLUIR) {
           const justificativa =
             justificativaRecebida || pedirJustificativaRejeicao();
@@ -6523,6 +7189,13 @@ Se aparecer erro de CORS no console do navegador, a importação direta pelo Git
       const atualizadoPeloTxt = FORCE_REIMPORT_ICMG_ON_START
           ? await importarIcmgGithubSeNecessario({ forcar: true })
           : await importarIcmgGithubSeNecessario();
+
+      const relacionamentosMigrados = migrateLegacyRelationshipChanges();
+      rebuildRelationshipStateFromBaselines();
+
+      if (relacionamentosMigrados) {
+        await saveState();
+      }
 
       // Ao abrir o app, não mostra automaticamente o último termo salvo.
       state.selectedId = null;
