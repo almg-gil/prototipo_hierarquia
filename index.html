@@ -2715,6 +2715,7 @@ function userCanAccessManagement() {
 
         <div class="toolbar management-header-actions">
           <button id="downloadHistoryPdfBtn">Baixar histórico (PDF)</button>
+          <button id="downloadHistoryCsvBtn">Baixar histórico (CSV)</button>
         </div>
 
         <div class="tabs">
@@ -2942,6 +2943,14 @@ function userCanAccessManagement() {
       if (downloadHistoryPdfBtn) {
         downloadHistoryPdfBtn.onclick = downloadHistoryPdf;
       }
+    const downloadHistoryCsvBtn =
+      document.getElementById("downloadHistoryCsvBtn");
+
+    if (downloadHistoryCsvBtn) {
+      downloadHistoryCsvBtn.onclick = downloadHistoryCsv;
+    }
+
+    
 
       const actionFilter = document.getElementById("managementActionFilter");
       if (actionFilter) {
@@ -6806,6 +6815,191 @@ removeTermCompletely(term.id);
 
       doc.save(`historico-tesauro-${pdfDateForFilename()}.pdf`);
     }
+
+    function csvCell(value) {
+  const text = String(value ?? "")
+    .replace(/"/g, '""');
+
+  return `"${text}"`;
+}
+
+function downloadHistoryCsv() {
+  const rows = [];
+
+  const headers = [
+    "registro",
+    "termo",
+    "caminho",
+    "tipo",
+    "decisao",
+    "decidido_por",
+    "decidido_em",
+    "justificativa",
+    "sth_status",
+    "sth_feito_por",
+    "sth_feito_em",
+    "resumo",
+    "autor_comentario",
+    "data_comentario",
+    "situacao_comentario",
+    "comentario",
+    "autor_resposta",
+    "data_resposta",
+    "resposta"
+  ];
+
+  // ============================================================
+  // DECISÕES
+  // ============================================================
+  const actions = sortedActionHistory();
+
+  actions.forEach(action => {
+    rows.push([
+      "decisao",
+      action.termo || "",
+      action.caminho || "",
+      action.tipoLabel || action.tipo || "",
+      action.decisao || "",
+      action.decididoPor || "",
+      formatDateTimeBr(action.decididoEm) || "",
+      action.justificativa || "",
+      action.decisao === "aprovada"
+        ? (action.sthStatus === "feito" ? "feito" : "aguardando execução")
+        : "",
+      action.sthFeitoPor || "",
+      formatDateTimeBr(action.sthFeitoEm) || "",
+      Array.isArray(action.resumo)
+        ? action.resumo.join("\n")
+        : "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ]);
+  });
+
+  // ============================================================
+  // COMENTÁRIOS E RESPOSTAS
+  // ============================================================
+  const comments = (state.comments || [])
+    .slice()
+    .sort((a, b) => {
+      const termA = getTerm(a.termId);
+      const termB = getTerm(b.termId);
+
+      const nameA = termA ? displayTermName(termA) : "";
+      const nameB = termB ? displayTermName(termB) : "";
+
+      const nameDiff = nameA.localeCompare(nameB, "pt-BR");
+
+      if (nameDiff !== 0) {
+        return nameDiff;
+      }
+
+      return String(a.createdAt || "")
+        .localeCompare(String(b.createdAt || ""));
+    });
+
+  comments.forEach(comment => {
+    const term = getTerm(comment.termId);
+
+    const termo = term
+      ? displayTermName(term)
+      : "Termo não encontrado";
+
+    const caminho = term
+      ? termPath(term)
+      : "";
+
+    const situacao = [
+      comment.visto ? "visto" : "não visto",
+      comment.resolved ? "resolvido" : ""
+    ]
+      .filter(Boolean)
+      .join(" / ");
+
+    // Linha do comentário
+    rows.push([
+      "comentario",
+      termo,
+      caminho,
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      comment.author || "Usuário",
+      formatDateTimeBr(comment.createdAt) || "",
+      situacao,
+      comment.text || "",
+      "",
+      "",
+      ""
+    ]);
+
+    // Uma linha para cada resposta
+    const replies = Array.isArray(comment.replies)
+      ? comment.replies
+      : [];
+
+    replies.forEach(reply => {
+      rows.push([
+        "resposta",
+        termo,
+        caminho,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        comment.author || "Usuário",
+        formatDateTimeBr(comment.createdAt) || "",
+        situacao,
+        comment.text || "",
+        reply.author || "Usuário",
+        formatDateTimeBr(reply.createdAt) || "",
+        reply.text || ""
+      ]);
+    });
+  });
+
+  const csv = "\uFEFF" + [
+    headers,
+    ...rows
+  ]
+    .map(row => row.map(csvCell).join(";"))
+    .join("\r\n");
+
+  const blob = new Blob(
+    [csv],
+    { type: "text/csv;charset=utf-8;" }
+  );
+
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download =
+    `historico-tesauro-${pdfDateForFilename()}.csv`;
+
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  URL.revokeObjectURL(url);
+}
 
     // ============================================================
     // Importação do Thesaurus ALMG
