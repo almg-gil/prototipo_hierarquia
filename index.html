@@ -6828,6 +6828,7 @@ function downloadHistoryCsv() {
 
   const headers = [
     "registro",
+    "term_id",
     "termo",
     "caminho",
     "tipo",
@@ -6856,6 +6857,7 @@ function downloadHistoryCsv() {
   actions.forEach(action => {
     rows.push([
       "decisao",
+      action.termId || "",
       action.termo || "",
       action.caminho || "",
       action.tipoLabel || action.tipo || "",
@@ -6924,6 +6926,7 @@ function downloadHistoryCsv() {
     // Linha do comentário
     rows.push([
       "comentario",
+      comment.termId || "",
       termo,
       caminho,
       "",
@@ -6952,6 +6955,7 @@ function downloadHistoryCsv() {
     replies.forEach(reply => {
       rows.push([
         "resposta",
+        comment.termId || "",
         termo,
         caminho,
         "",
